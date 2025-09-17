@@ -1,7 +1,7 @@
 # DCSSpectrumTool
 Python GUI for generating x-ray spectra 
 
-Installation Instructions for making a new python environment for this tool for windows. 
+## Installation Instructions for making a new python environment for this tool for windows. 
 
 I'm using the oasys_srw library's version of srwlib, which is very specific about the python version so I keep it to its own environment.  If you want to adapt to your base environment, you can install srwlib or compile a compatible version and change the library dependencies of the code to refer to that instead of oasys_srw.srwlib.
 
@@ -16,10 +16,9 @@ This location is also common: C:\Users\myusername\AppData\Local\miniconda3
 
 3) conda env create -n env_DCSSpectrum -f "<DCSSpectrumToolFolderLocation>\requirements_DCSSpectrum.yaml"
 replace <DCSSpectrumToolFolderLocation> with the location where you put this folder
-
 This makes a new python environment with the required libraries, so it shouldn't affect any existing python environments. 
 
-4) You can run this by activating the environment we just created and then running the script: 
+5) You can run this by activating the environment we just created and then running the script: 
 conda activate env_DCSSpectrum
 python <DCSSpectrumToolFolderLocation>\DCSSpectrum.py
 
@@ -30,12 +29,12 @@ Replace the folder locations with yours.
 
 
 
-Linux Installation: 
+## Linux Installation: 
 
 TBD.
 
 
-Instructions for Use: 
+## Instructions for Use: 
 Click 'Calc' to create a 1D spectral calculation eV vs Spectral Power (W/eV), plotted with matplotlib. 
 Use the U14/U23 pulldown menu to select the undulator magnet set. You can specify the energy of a harmonic by specifying the harmonic # and the peak energy. Doing this will roughly set the peak to that energy. If you want a more precise peak location, specify the energy then click 'Optimize K', which will find a K parameter that has your specified peak energy and it will select the 'Use K' checkbox. When the 'Use K' Checkbox is checked, it will ignore the energy value you've specified and just use the K value specified in the edit box. 
 
