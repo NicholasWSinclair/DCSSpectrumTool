@@ -1,5 +1,5 @@
 # DCSSpectrumTool
-Python GUI for generating x-ray spectra 
+Python GUI for generating x-ray spectra specific to the Dynamic Compression Sector at the Advanced Photon Source. This is essentially just a front-end for srwlib but with DCS-specific parameters. 
 
 ## Installation Instructions for making a new python environment for this tool for windows. 
 
