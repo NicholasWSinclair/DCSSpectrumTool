@@ -2,7 +2,7 @@ import sys
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QPushButton, QHBoxLayout,
     QCheckBox, QLineEdit, QLabel,QComboBox, QFormLayout)
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, QTimer
 import h5py
 from scipy.interpolate import RegularGridInterpolator
 import numpy as np
@@ -92,6 +92,17 @@ class MultilayerConfig(QWidget):
         self.MLReflectivityInterpolator = RegularGridInterpolator((MLangledat,MLEdat), MLimgdat,
                                  bounds_error=False, fill_value=None)    
         self.datastored = MLname
+
+    def blink_red(self,widgettoblink):
+        # Set the edit box to red
+        widgettoblink.setStyleSheet("QLineEdit { background-color: red; }")
+    
+        # Create a timer to revert the color back
+        QTimer.singleShot(500, lambda: self.revert_color(widgettoblink))  # Change color back after 500 ms
+
+    def revert_color(self,widgettoblink):
+        # Revert to the original style
+        widgettoblink.setStyleSheet("")
     
     def setangle(self):        
         MLname = self.combo.currentText()
@@ -100,7 +111,15 @@ class MultilayerConfig(QWidget):
             dspacing = 3.93 #nm
         elif MLname== "2.2nm #692":
             dspacing = 2.2
-        desiredEnergy = float(self.MLenergyedit.text())
+
+        try: 
+            desiredEnergy = float(self.MLenergyedit.text())
+            if desiredEnergy < 1000:
+                self.blink_red(self.MLenergyedit)
+                return
+        except ValueError:
+            self.blink_red(self.MLenergyedit)
+            return
         
         
         if not self.MLReflectivityInterpolator:
