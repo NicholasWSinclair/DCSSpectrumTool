@@ -14,13 +14,13 @@ where <YourMinicondaFolder> should be replaced with your Miniconda3 install loca
 This location is also common: C:\Users\myusername\AppData\Local\miniconda3
 
 
-3) conda env create -n env_DCSSpectrum -f "<DCSSpectrumToolFolderLocation>\environment.yml"
+3) conda env create -n env_DCSSpectrum -f "*DCSSpectrumToolFolderLocation*\environment.yml"
 replace <DCSSpectrumToolFolderLocation> with the location where you put this folder
 This makes a new python environment with the required libraries, so it shouldn't affect any existing python environments. 
 
 5) You can run this by activating the environment we just created and then running the script: 
 conda activate env_DCSSpectrum
-python <DCSSpectrumToolFolderLocation>\DCSSpectrum.py
+python *DCSSpectrumToolFolderLocation*\DCSSpectrum.py
 
 If you want to make a shortcut for this, so you don't need to use the terminal in the future, it needs to point to the python.exe for the environment we created. For example, the shortcut is now: 
 <YourMinicondaFolder>\envs\env_DCSSpectrum\python.exe "<DCSSpectrumToolFolderLocation>\DCSSpectrum.py"
@@ -31,12 +31,20 @@ Replace the folder locations with yours.
 
 ## Linux Installation: 
 
-> install miniconda
-> cd <BaseDirectoryWhereYouWantThisRepoFolder>
+1) install miniconda
+2) clone repo
+> 
+> cd *BaseDirectoryWhereYouWantThisRepoFolder*
+> 
 > git clone https://github.com/NicholasWSinclair/DCSSpectrumTool.git
+>
+3) create environment
 > cd DCSSpectrumTool
+> 
 > conda env create -f environment.yml
+4) activate environment
 > conda activate env_DCSSpectrum_new    <-- this env name is specified in the environment yml. change it there or with the -n option when creating the environment
+5) run
 > python DCSSpectrum.py
 
 
