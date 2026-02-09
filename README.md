@@ -57,7 +57,7 @@ Replace the folder locations with yours.
 
 
 ## Instructions for Use: 
-Click 'Calc' to create a 1D spectral calculation eV vs Spectral Power (W/eV), plotted with matplotlib. 
+Click 'Calc' to create a 1D spectral calculation (eV) vs Spectral Power (W/eV), plotted with matplotlib. 
 
 There are standard configurations in /StandardSpectralConfigurations that you can load from the file menu 'Load Configuration'. 
 
