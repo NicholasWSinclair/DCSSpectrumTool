@@ -14,7 +14,7 @@ where <YourMinicondaFolder> should be replaced with your Miniconda3 install loca
 This location is also common: C:\Users\myusername\AppData\Local\miniconda3
 
 
-3) conda env create -n env_DCSSpectrum -f "<DCSSpectrumToolFolderLocation>\requirements_DCSSpectrum.yaml"
+3) conda env create -n env_DCSSpectrum -f "<DCSSpectrumToolFolderLocation>\environment.yml"
 replace <DCSSpectrumToolFolderLocation> with the location where you put this folder
 This makes a new python environment with the required libraries, so it shouldn't affect any existing python environments. 
 
@@ -31,11 +31,20 @@ Replace the folder locations with yours.
 
 ## Linux Installation: 
 
-TBD.
+> install miniconda
+> cd <BaseDirectoryWhereYouWantThisRepoFolder>
+> git clone https://github.com/NicholasWSinclair/DCSSpectrumTool.git
+> cd DCSSpectrumTool
+> conda env create -f environment.yml
+> conda activate env_DCSSpectrum_new    <-- this env name is specified in the environment yml. change it there or with the -n option when creating the environment
+> python DCSSpectrum.py
 
 
 ## Instructions for Use: 
 Click 'Calc' to create a 1D spectral calculation eV vs Spectral Power (W/eV), plotted with matplotlib. 
+
+There are standard configurations in /StandardSpectralConfigurations that you can load from the file menu 'Load Configuration'. 
+
 Use the U14/U23 pulldown menu to select the undulator magnet set. You can specify the energy of a harmonic by specifying the harmonic # and the peak energy. Doing this will roughly set the peak to that energy. If you want a more precise peak location, specify the energy then click 'Optimize K', which will find a K parameter that has your specified peak energy and it will select the 'Use K' checkbox. When the 'Use K' Checkbox is checked, it will ignore the energy value you've specified and just use the K value specified in the edit box. 
 
 Add x-ray mirrors and filters with the corresponding buttons, which open GUIs for specifying those. 
