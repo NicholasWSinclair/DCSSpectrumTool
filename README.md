@@ -3,7 +3,6 @@ Python GUI for generating x-ray spectra specific to the Dynamic Compression Sect
 
 ## Installation Instructions for making a new python environment for this tool for windows. 
 
-I'm using the oasys_srw library's version of srwlib, which is very specific about the python version so I keep it to its own environment.  If you want to adapt to your base environment, you can install srwlib or compile a compatible version and change the library dependencies of the code to refer to that instead of oasys_srw.srwlib.
 
 1) install miniconda (latest version is fine), you shouldn't need to make it the active python 3 install or add it to path, but those are fine too.
 https://repo.anaconda.com/miniconda/Miniconda3-latest-Windows-x86_64.exe
