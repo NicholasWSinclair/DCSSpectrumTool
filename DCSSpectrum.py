@@ -488,6 +488,7 @@ class DCSSpectrum(QWidget):
                     if widget:
                         self.mirrormanager.remove_row(widget)
                 self.mirrormanager.update_lists() # Clear internal lists
+                
 
             if "MirrorManager" in f:
                 print('Found MirrorManager in config file')
@@ -537,6 +538,7 @@ class DCSSpectrum(QWidget):
                      # Mirrors were selected, but none found in file.
                      # We still cleared the UI, so effectively we loaded "0 mirrors"
                      loaded_components.append("Mirrors: 0 loaded (Cleared)")
+                self.mirrormanager.hide()
 
 
         # Filter Manager
@@ -558,6 +560,7 @@ class DCSSpectrum(QWidget):
                     self.filtermanager.add_filter(c, t, d, enable=True)
                 self.filtermanager.update_lists()
                 loaded_components.append(f"Filters: {len(compounds)} loaded")
+                self.filtermanager.hide()
 
         # Multilayer Config
         if "Multilayer" in selected_components:
@@ -570,6 +573,7 @@ class DCSSpectrum(QWidget):
                 if 'checkbox_state' in grp.attrs: self.multilayerconfig.enableMLcheck.setCheckState(int(grp.attrs['checkbox_state']))
                 if 'enabled' in grp.attrs: self.multilayerenabled = grp.attrs['enabled']
                 loaded_components.append("Multilayer Configuration")
+                self.multilayerconfig.hide()
 
         return "\n".join(loaded_components)
 
@@ -638,11 +642,11 @@ class DCSSpectrum(QWidget):
            if undulatorvalue=='U23':
                period = 0.023
                minE = 5000
-               maxE = 14000
+               maxE = 14700
            elif undulatorvalue=='U14':
                period = 0.014
                minE = 19000
-               maxE = 23000
+               maxE = 24000
        else:
            if undulatorvalue=='U27':
                period = 0.027
