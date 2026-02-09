@@ -2,42 +2,47 @@ import sys
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QPushButton, QHBoxLayout,QComboBox,
     QCheckBox, QLineEdit, QLabel, QMainWindow, QFormLayout, QAction, QMenuBar, 
-    QFileDialog, QMessageBox, QGroupBox, QProgressBar, QSlider
+    QFileDialog, QMessageBox, QGroupBox, QProgressBar, QSlider,QSizePolicy, 
+    QSystemTrayIcon, QMenu,qApp, QDialog, QDialogButtonBox
 )
-from PyQt5.QtWidgets import QSizePolicy
+from PyQt5.QtGui import QIcon
 import itertools
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QThreadPool, QRunnable, pyqtSignal, QObject
+from PyQt5.QtGui import QIcon, QCursor
 
 
 import os
+import h5py
 from xoppylib.power.xoppy_calc_power import xoppy_calc_power
 from xoppylib.sources.srundplug import calc1d_srw
-import oasys_srw.srwlib as srwlib
+try:
+    import oasys_srw.srwlib as srwlib
+except:
+    from srwpy import srwlib
 import xraylib
 import scipy.constants as codata
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas, NavigationToolbar2QT
 from matplotlib.figure import Figure
+from matplotlib.patches import Rectangle
 from collections import OrderedDict
-from sklearn.utils import shuffle
+
 import csv
 import scipy.interpolate
 import time
-import sys
-import pprint
-import multiprocessing
 
-from packaging.version import parse as parse_version
-if parse_version(np.__version__)<parse_version('2.0'):
+try: # if using numpy < 2.0
     from numpy import trapz as trapezoid
-else:
+except ImportError: # if using numpy >= 2.0, but still monkey patching for xoppylib which uses trapz
     from numpy import trapezoid
+    np.trapz = trapezoid
     
 # Local Imports -- These are in the same folder as this file
 import FilterGUI
 import MultilayerConfig
 import MirrorGUI
+import ConfigImportDialog
     
 class DCSSpectrum(QWidget):
     def __init__(self):
@@ -69,6 +74,14 @@ class DCSSpectrum(QWidget):
         save_action = QAction('Save Spectrum To CSV', self)        
         save_action.triggered.connect(self.save_spectrum_toCSV)
         file_menu.addAction(save_action)
+
+        save_config_action = QAction('Save Configuration', self)
+        save_config_action.triggered.connect(self.save_config)
+        file_menu.addAction(save_config_action)
+
+        load_config_action = QAction('Load Configuration', self)
+        load_config_action.triggered.connect(self.load_config)
+        file_menu.addAction(load_config_action)
         
         TwoDCalc_action = QAction('2D Undulator Calc', self)
         TwoDCalc_action.triggered.connect(self.create2Dcalc)
@@ -110,7 +123,7 @@ class DCSSpectrum(QWidget):
         hbox1.addWidget(self.APSUcheck)
         
    
-        #  QComboBox
+        #  Undulator combo box
         self.combo = QComboBox()
         self.combo.addItems(["U23", "U14"])
         defaultundulator = 'U14'
@@ -146,7 +159,7 @@ class DCSSpectrum(QWidget):
         self.KVal_edit = QLineEdit()
         self.KVal_edit.setText('0.436')
         hbox3.addWidget(self.KVal_edit)
-        self.KVal_edit.setPlaceholderText('Set Undulator K-Value With Optimize Button, U23 Closed Gap = 1.61')
+        self.KVal_edit.setPlaceholderText('Set Undulator K-Value With Optimize Button, U23 Closed Gap = 1.498')
         
         #SetK button
         self.OptimizeK_button = QPushButton('Optimize K')
@@ -188,6 +201,7 @@ class DCSSpectrum(QWidget):
         self.setLayout(main_layout)
     
         self.setWindowTitle("DCS Spectrum Calculation")
+        self.setup_tray_icon()
         self.setGeometry(100, 100, 400, 200)
         
         #### Other Parameters
@@ -200,15 +214,365 @@ class DCSSpectrum(QWidget):
         self.spectralpower_dat=[]
         self.energy_dat=[]
         self.ringenergy=6.0
+        self.WBScenterH = 0.0
+        self.WBScenterV = 0.0
         self.WBSsizeH = 1.5
         self.WBSsizeV = 1.0
         self.esliceviewer = None
         
         
-        self.slitparams =  ('WBSsizeH','WBSsizeV')
+        self.slitparams =  ('WBSsizeH','WBSsizeV','WBScenterH','WBScenterV')
         
 
+    def setup_tray_icon(self):
+        if not QSystemTrayIcon.isSystemTrayAvailable():
+            return
+
+        self.tray_icon = QSystemTrayIcon(self)
         
+        # Load icon 
+        icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'ui','DCSSpectrumIcon4.ico')
+        if os.path.exists(icon_path):
+            icon = QIcon(icon_path)
+            self.tray_icon.setIcon(icon)
+            self.setWindowIcon(icon)
+        
+        # Context Menu
+        tray_menu = QMenu()
+        
+        restore_action = QAction("Restore", self)
+        restore_action.triggered.connect(self.show_normal_and_raise)
+        tray_menu.addAction(restore_action)
+        
+        quit_action = QAction("Quit", self)
+        quit_action.triggered.connect(qApp.quit)
+        tray_menu.addAction(quit_action)
+        
+        self.tray_icon.setContextMenu(tray_menu)
+        self.tray_icon.show()
+        
+        self.tray_icon.activated.connect(self.on_tray_icon_activated)
+
+    def show_normal_and_raise(self):
+        self.showNormal()
+        self.raise_()
+        self.activateWindow()
+
+    def on_tray_icon_activated(self, reason):
+        if reason == QtWidgets.QSystemTrayIcon.Trigger:
+            self.show_normal_and_raise() 
+    def save_config(self):
+        options = QFileDialog.Options()
+        fileName, _ = QFileDialog.getSaveFileName(self,"Save Configuration","","HDF5 Files (*.h5)", options=options)
+        if fileName:
+            try:
+                with h5py.File(fileName, 'w') as f:
+                    self.save_to_h5_group(f)
+                QMessageBox.information(self, "Success", "Configuration saved successfully.")
+            except Exception as e:
+                QMessageBox.critical(self, "Error", f"Failed to save configuration: {e}")
+
+    def save_to_h5_group(self, f):
+        # Main Window Parameters
+        f.attrs['Emin'] = self.Emin_edit.text()
+        f.attrs['Emax'] = self.Emax_edit.text()
+        f.attrs['NPts'] = self.NPts_edit.text()
+        f.attrs['APSU'] = self.APSUcheck.checkState()
+        f.attrs['Undulator'] = self.combo.currentText()
+        f.attrs['Harmonic'] = self.harmonic_edit.text()
+        f.attrs['Energy'] = self.energy_edit.text()
+        f.attrs['UseK'] = self.useKcheckbox.checkState()
+        f.attrs['KValue'] = self.KVal_edit.text()
+        f.attrs['RingCurrent'] = self.ringcurrent_edit.text()
+        
+        # WBS Parameters
+        f.attrs['WBSsizeH'] = self.WBSsizeH
+        f.attrs['WBSsizeV'] = self.WBSsizeV
+        f.attrs['WBScenterH'] = self.WBScenterH
+        f.attrs['WBScenterV'] = self.WBScenterV
+
+        # Mirror Manager
+        # Always create the group to define the state (even if empty)
+        grp = f.create_group("MirrorManager")
+        
+        m_stripes = []
+        m_angles = []
+        m_densities = []
+        
+        if self.mirrormanager:
+             self.mirrormanager.update_lists()
+             m_stripes = self.mirrormanager.activeMirrorStripes
+             m_angles = self.mirrormanager.activeAngles
+             m_densities = self.mirrormanager.activeDensities
+        
+        grp.create_dataset("activeMirrorStripes", data=np.array(m_stripes, dtype='S'))
+        grp.create_dataset("activeAngles", data=np.array(m_angles))
+        
+        densities_str = [str(d) for d in m_densities]
+        grp.create_dataset("activeDensities", data=np.array(densities_str, dtype='S'))
+
+        # Filter Manager
+        grp = f.create_group("FilterManager")
+        f_compounds = []
+        f_thicknesses = []
+        f_densities = []
+
+        if self.filtermanager:
+            self.filtermanager.update_lists()
+            f_compounds = self.filtermanager.activeCompounds
+            f_thicknesses = self.filtermanager.activeThicknesses
+            f_densities = self.filtermanager.activeDensities
+        
+        grp.create_dataset("activeCompounds", data=np.array(f_compounds, dtype='S'))
+        grp.create_dataset("activeThicknesses", data=np.array(f_thicknesses))
+        densities_str = [str(d) for d in f_densities]
+        grp.create_dataset("activeDensities", data=np.array(densities_str, dtype='S'))
+
+        # Multilayer Config
+        grp = f.create_group("MultilayerConfig")
+        if self.multilayerconfig:
+            grp.attrs['enabled'] = self.multilayerenabled
+            grp.attrs['ML_type'] = self.multilayerconfig.combo.currentText()
+            grp.attrs['ML_energy'] = self.multilayerconfig.MLenergyedit.text()
+            grp.attrs['ML_angle'] = self.multilayerconfig.angleedit.text()
+            grp.attrs['checkbox_state'] = self.multilayerconfig.enableMLcheck.checkState()
+        else:
+            grp.attrs['enabled'] = 0
+            grp.attrs['ML_type'] = '[None]'
+            grp.attrs['ML_energy'] = '0'
+            grp.attrs['ML_angle'] = '0'
+            grp.attrs['checkbox_state'] = 0
+
+    def scan_config(self, f):
+        found = []
+        # Handle nesting
+        if 'SpectrumManager' in f:
+             f = f['SpectrumManager']
+             
+        # Check Main Params (heuristic: check for a few key attrs)
+        if 'Emin' in f.attrs or 'Undulator' in f.attrs:
+            found.append("Main Parameters")
+            
+        if "MirrorManager" in f:
+            found.append("Mirrors")
+            
+        if "FilterManager" in f:
+            found.append("Filters")
+            
+        if "MultilayerConfig" in f:
+            found.append("Multilayer")
+            
+        return found
+
+    def load_config(self, fileName=None):
+        manual_load = False
+        if not fileName:
+            manual_load = True
+            options = QFileDialog.Options()
+            fileName, _ = QFileDialog.getOpenFileName(self,"Load Configuration","","HDF5 Files (*.h5)", options=options)
+            
+        if fileName:
+            try:
+                with h5py.File(fileName, 'r') as f:
+                    available = self.scan_config(f)
+                    if not available:
+                         QMessageBox.information(self, "Info", "No recognized configuration data found.")
+                         return
+                         
+                    # For direct loading (filename provided), skip dialog and assume all components
+                    if not manual_load: 
+                        selected = available # Load everything available
+                    else:
+                        dlg = ConfigImportDialog.ConfigImportDialog(available, self)
+                        if dlg.exec_():
+                            selected = dlg.get_selected()
+                        else:
+                            return
+
+                    summary = self.load_from_h5_group(f, selected)
+                    
+                    # Check for pre-calculated spectrum
+                    if 'energy_spectrum' in f:
+                        spec_grp = f['energy_spectrum']
+                        if 'energy_eV' in spec_grp and 'spectral_power_W_per_eV' in spec_grp:
+                            self.energy_dat = np.array(spec_grp['energy_eV'])
+                            self.spectralpower_dat = np.array(spec_grp['spectral_power_W_per_eV'])
+                            print(f"Loaded {len(self.energy_dat)} points from energy_spectrum")
+                            
+                            # Update plots if window exists
+                            # This mimics part of CalcSpectrum but for loaded data
+                            self.subwindows.append(ExtraFigureWindow(self, windowtitle="Spectral Power Plot (Loaded)"))
+                            newfig = self.subwindows[-1]        
+                            newfig.ax.set_aspect('auto')
+                            newfig.ax.plot(self.energy_dat, self.spectralpower_dat, label='Loaded Spectrum')
+                            newfig.ax.set_xlabel('Energy (eV)', fontsize=8)
+                            newfig.ax.set_ylabel('Spectral Power (W/eV)', fontsize=8)
+                            newfig.ax.tick_params(axis='both', labelsize=8)
+                            newfig.ax.legend(fontsize=8)    
+                            newfig.show() 
+                            
+                            newfig.xdata.append(self.energy_dat)
+                            newfig.ydata.append(self.spectralpower_dat)
+                            
+                            # Calculate power stats
+                            photons_pereV_persec = self.spectralpower_dat/self.energy_dat/(1.602e-19)
+                            photons_perbunch24bunch = trapezoid(photons_pereV_persec,self.energy_dat)/(271647*24)
+                            photons_perbunch48bunch = trapezoid(photons_pereV_persec,self.energy_dat)/(271647*48)
+                            totalpower = trapezoid(self.spectralpower_dat,self.energy_dat)
+                            
+                            Eperbunch_24_uJ = totalpower/(271647*24)*1e6
+                            Eperbunch_48_uJ = totalpower/(271647*48)*1e6
+                            self.statustext.setText(f'Power: {totalpower:.3f} W, 24-bunch ph.: {photons_perbunch24bunch:.2e} ph. ({Eperbunch_24_uJ:.2f} µJ), 48-bunch ph.: {photons_perbunch48bunch:.2e} ph. ({Eperbunch_48_uJ:.2f} µJ)')
+                            
+                            if summary:
+                                summary += "\n\nAlso loaded pre-calculated 'energy_spectrum'."
+                        else:
+                             print("energy_spectrum group found but missing datasets. Calculating...")
+                             self.CalcSpectrum()
+                             if summary: summary += "\n\nCalculated new spectrum (pre-calculated data incomplete)."
+                    else:
+                        print("No energy_spectrum group found. Calculating...")
+                        self.CalcSpectrum()
+                        if summary: summary += "\n\nCalculated new spectrum."
+
+                    msg = "Configuration loaded successfully."
+                    if summary:
+                        msg += f"\n\nDetails:\n{summary}"
+                    
+                    if manual_load:
+                        QMessageBox.information(self, "Success", msg)
+                        
+            except Exception as e:
+                QMessageBox.critical(self, "Error", f"Failed to load configuration: {e}")
+
+    def load_from_h5_group(self, f, selected_components=None):
+        if selected_components is None:
+            # Default to all if not specified (legacy or direct call)
+            selected_components = ["Main Parameters", "Mirrors", "Filters", "Multilayer"]
+            
+        loaded_components = []
+        # Check if we are loading from a file that has the config in a subgroup 'SpectrumManager'
+        # or if 'f' itself is the group/file containing the config
+        
+        # If f is a file or group, check if it has 'SpectrumManager' subgroup
+        if 'SpectrumManager' in f:
+            f = f['SpectrumManager']
+        
+        # Main Window Parameters
+        if "Main Parameters" in selected_components:
+            if 'Emin' in f.attrs: 
+                self.Emin_edit.setText(str(f.attrs['Emin']))
+                loaded_components.append("Main Parameters")
+            if 'Emax' in f.attrs: self.Emax_edit.setText(str(f.attrs['Emax']))
+            if 'NPts' in f.attrs: self.NPts_edit.setText(str(f.attrs['NPts']))
+            if 'APSU' in f.attrs: self.APSUcheck.setCheckState(int(f.attrs['APSU']))
+            if 'Undulator' in f.attrs: self.combo.setCurrentText(f.attrs['Undulator'])
+            if 'Harmonic' in f.attrs: self.harmonic_edit.setText(str(f.attrs['Harmonic']))
+            if 'Energy' in f.attrs: self.energy_edit.setText(str(f.attrs['Energy']))
+            if 'UseK' in f.attrs: self.useKcheckbox.setCheckState(int(f.attrs['UseK']))
+            if 'KValue' in f.attrs: self.KVal_edit.setText(str(f.attrs['KValue']))
+            if 'RingCurrent' in f.attrs: self.ringcurrent_edit.setText(str(f.attrs['RingCurrent']))
+            
+            if 'WBSsizeH' in f.attrs: self.WBSsizeH = f.attrs['WBSsizeH']
+            if 'WBSsizeV' in f.attrs: self.WBSsizeV = f.attrs['WBSsizeV']
+            if 'WBScenterH' in f.attrs: self.WBScenterH = f.attrs['WBScenterH']
+            if 'WBScenterV' in f.attrs: self.WBScenterV = f.attrs['WBScenterV']
+
+
+        # Mirror Manager - Clear first if exists
+        if "Mirrors" in selected_components:
+            if self.mirrormanager:
+                while self.mirrormanager.Mirrors_container.count() > 0:
+                    item = self.mirrormanager.Mirrors_container.itemAt(0)
+                    widget = item.widget()
+                    if widget:
+                        self.mirrormanager.remove_row(widget)
+                self.mirrormanager.update_lists() # Clear internal lists
+
+            if "MirrorManager" in f:
+                print('Found MirrorManager in config file')
+                grp = f["MirrorManager"]
+                
+                stripes = []
+                if "activeMirrorStripes" in grp:
+                    raw_stripes = grp["activeMirrorStripes"][:]
+                    for s in raw_stripes:
+                        if hasattr(s, 'decode'):
+                            s = s.decode('utf-8')
+                        else:
+                            s = str(s)
+                        stripes.append(s.strip())
+                
+                angles = []
+                if "activeAngles" in grp:
+                    angles = grp["activeAngles"][:]
+                
+                densities = []
+                if "activeDensities" in grp:
+                    raw_densities = grp["activeDensities"][:]
+                    for s in raw_densities:
+                        if hasattr(s, 'decode'):
+                            s = s.decode('utf-8')
+                        else:
+                            s = str(s)
+                        densities.append(s.strip())
+                
+                print(f'Loading Mirrors: {len(stripes)} found.')
+                
+                if len(stripes) > 0:
+                    self.makeMirrorGUI() # Ensure GUI exists and show it if we have mirrors
+                    
+                    # Ensure lengths match or notify
+                    if not (len(stripes) == len(angles) == len(densities)):
+                        print(f"Warning: properties length mismatch: S:{len(stripes)} A:{len(angles)} D:{len(densities)}")
+                    
+                    for s, a, d in zip(stripes, angles, densities):
+                        if hasattr(a, 'item'):
+                            a = a.item()
+                        print(f"DEBUG ADD MIRROR: Stripe='{s}' Angle={a} Density='{d}'")
+                        self.mirrormanager.add_Mirror(s, a, d, enabled=True)
+                    self.mirrormanager.update_lists()
+                    loaded_components.append(f"Mirrors: {len(stripes)} loaded")
+                else: 
+                     # Mirrors were selected, but none found in file.
+                     # We still cleared the UI, so effectively we loaded "0 mirrors"
+                     loaded_components.append("Mirrors: 0 loaded (Cleared)")
+
+
+        # Filter Manager
+        if "Filters" in selected_components:
+            if "FilterManager" in f:
+                self.makefilterGUI()
+                while self.filtermanager.filters_container.count() > 0:
+                    item = self.filtermanager.filters_container.itemAt(0)
+                    widget = item.widget()
+                    if widget:
+                        self.filtermanager.remove_row(widget)
+                
+                grp = f["FilterManager"]
+                compounds = [s.decode('utf-8') for s in grp["activeCompounds"][:]]
+                thicknesses = grp["activeThicknesses"][:]
+                densities = [s.decode('utf-8') for s in grp["activeDensities"][:]]
+                
+                for c, t, d in zip(compounds, thicknesses, densities):
+                    self.filtermanager.add_filter(c, t, d, enable=True)
+                self.filtermanager.update_lists()
+                loaded_components.append(f"Filters: {len(compounds)} loaded")
+
+        # Multilayer Config
+        if "Multilayer" in selected_components:
+            if "MultilayerConfig" in f:
+                self.openMultilayerConfig()
+                grp = f["MultilayerConfig"]
+                if 'ML_type' in grp.attrs: self.multilayerconfig.combo.setCurrentText(grp.attrs['ML_type'])
+                if 'ML_energy' in grp.attrs: self.multilayerconfig.MLenergyedit.setText(str(grp.attrs['ML_energy']))
+                if 'ML_angle' in grp.attrs: self.multilayerconfig.angleedit.setText(str(grp.attrs['ML_angle']))
+                if 'checkbox_state' in grp.attrs: self.multilayerconfig.enableMLcheck.setCheckState(int(grp.attrs['checkbox_state']))
+                if 'enabled' in grp.attrs: self.multilayerenabled = grp.attrs['enabled']
+                loaded_components.append("Multilayer Configuration")
+
+        return "\n".join(loaded_components)
+
     def undulatorchanged(self):
         val = self.combo.currentText()
         if val == 'U14':
@@ -218,8 +582,8 @@ class DCSSpectrum(QWidget):
 
         elif val == 'U23':
             self.harmonic_edit.setText(str(3))
-            self.energy_edit.setText(str(19300.0))
-            self.KVal_edit.setText('1.61')
+            self.energy_edit.setText(str(20925))
+            self.KVal_edit.setText('1.498')
                 
     def open_gui_to_adjust_WBS(self):
         """Opens a GUI to adjust specific parameters."""
@@ -246,7 +610,17 @@ class DCSSpectrum(QWidget):
     def closeEvent(self, event):
         for wins in self.subwindows:
             if wins:
-                wins.close()                 
+                wins.close()
+                
+        # Close child GUIs if they are open
+        if self.mirrormanager and hasattr(self.mirrormanager, 'close'):
+            self.mirrormanager.close()
+            
+        if self.filtermanager and hasattr(self.filtermanager, 'close'):
+            self.filtermanager.close()
+            
+        if self.multilayerconfig and hasattr(self.multilayerconfig, 'close'):
+            self.multilayerconfig.close()                 
         
     def openMultilayerConfig(self):
         if not self.multilayerconfig:
@@ -325,6 +699,8 @@ class DCSSpectrum(QWidget):
             return
         slitsize_h = self.WBSsizeH#0.001457*1000
         slitsize_v= self.WBSsizeV#0.000973*1000
+        slitcenter_h = self.WBScenterH
+        slitcenter_v = self.WBScenterV
         
         if self.APSUcheck.checkState()>0:
             APSU=1
@@ -343,12 +719,14 @@ class DCSSpectrum(QWidget):
              
         UndulatorConfig = UndulatorCalcConfig(self,undulatorvalue,period,harmonicnumber,energy,npts,emin,emax,K,ringcurrent,APSU)
         
-        edat,specpower0 = undulatorcalc(UndulatorConfig,0,0,slitsize_h,slitsize_v)
+        edat,specpower0 = undulatorcalc(UndulatorConfig,slitcenter_h,slitcenter_v,slitsize_h,slitsize_v)
              
-        self.subwindows.append(ExtraFigureWindow(self))
+        self.subwindows.append(ExtraFigureWindow(self,windowtitle="Spectral Power Plot"))
+        
+        pltlist=[]
         newfig = self.subwindows[-1]        
-        newfig.ax.set_aspect('auto')          
-        newfig.ax.plot(edat,specpower0)
+        newfig.ax.set_aspect('auto')
+        newfig.ax.plot(edat,specpower0,label='Undulator Output')
            
 
       
@@ -356,7 +734,7 @@ class DCSSpectrum(QWidget):
         if self.mirrormanager:
             if len(self.mirrormanager.activeMirrorStripes)>0:
                 edat,specpower1=self.XrayMirror(edat,specpower0)
-                newfig.ax.plot(edat,specpower1) 
+                newfig.ax.plot(edat,specpower1,label='After Mirrors')
             else:
                 specpower1 = specpower0
         else:
@@ -368,7 +746,7 @@ class DCSSpectrum(QWidget):
         if self.filtermanager:
             if len(self.filtermanager.activeCompounds)>0:
                 edat,specpower2=self.XrayFilter(edat,specpower1)
-                newfig.ax.plot(edat,specpower2)
+                newfig.ax.plot(edat,specpower2,label='After Filters')
                 # newfig.xdata.append(edat)
                 # newfig.ydata.append(specpower2)
             else:
@@ -386,14 +764,27 @@ class DCSSpectrum(QWidget):
                 print('Invalid Value For ML Angle')
                 self.statustext.setText('Invalid Value For ML Angle')
                 return 
+            
+            if not self.multilayerconfig.MLReflectivityInterpolator:
+                self.multilayerconfig.readMLData()
+                
             reflectivityvals = self.multilayerconfig.MLReflectivityInterpolator((MLangle,edat))
             specpower3 = specpower2*reflectivityvals 
-            newfig.ax.plot(edat,specpower3)
+            newfig.ax.plot(edat,specpower3,linestyle='solid',label='After Multilayer')
 
         else:
             specpower3 = specpower2
-        newfig.ax.set_xlabel('Energy (eV)')
-        newfig.ax.set_ylabel('Spectral Power (W/eV)')
+            
+        lines = newfig.ax.lines
+            
+        if len(lines)>1:
+            for l in lines[:-1]:
+                l.set(linestyle='--')
+            
+        newfig.ax.set_xlabel('Energy (eV)', fontsize=8)
+        newfig.ax.set_ylabel('Spectral Power (W/eV)', fontsize=8)
+        newfig.ax.tick_params(axis='both', labelsize=8)
+        newfig.ax.legend(fontsize=8)    
         newfig.show() 
 
         
@@ -452,7 +843,7 @@ class DCSSpectrum(QWidget):
         self.filtermanager.add_filter("Be", 0.508+0.508+0.254,'?',enable=True)
         self.filtermanager.add_filter("Kapton Polyimide Film",0.25, '?',enable=True)
         self.filtermanager.add_filter("He", 300,'?',enable=True)
-        self.filtermanager.add_filter("C0.000124N0.755268O0.231781Ar0.012827", 100,0.00120479,enable=True)
+        self.filtermanager.add_filter("Air, Dry (near sea level)", 100,'?',enable=True)
         
 
     def makefilterGUI(self):
@@ -541,12 +932,25 @@ class DCSSpectrum(QWidget):
         
 
         
-    def plotinnewwindow(self,x,y):
-        self.subwindows.append(ExtraFigureWindow(self))
+    def plotinnewwindow(self,x,y, windowtitle="Plot"):
+        self.subwindows.append(ExtraFigureWindow(self,windowtitle=windowtitle))
         newfig = self.subwindows[-1]
         newfig.ax.plot(x,y)
         newfig.ax.set_aspect('auto')
         newfig.show() 
+        
+    def plot_filter_attenuation(self, energy, attenuation):
+        """Plot transmission of the current filter stack over the requested energy range."""
+        self.subwindows.append(ExtraFigureWindow(self, enable_roi_selection=False,windowtitle="Filter Attenuation"))
+        newfig = self.subwindows[-1]
+        newfig.ax.set_aspect('auto')
+        newfig.ax.plot(energy, attenuation, label='Filter Attenuation')
+        newfig.ax.set_xlabel('Energy (eV)')
+        newfig.ax.set_ylabel('Transmission')
+        newfig.ax.legend()
+        newfig.show()
+        newfig.xdata.append(energy)
+        newfig.ydata.append(attenuation)
         
     def optimizeKclicked(self):
         undulatorvalue,period_inm,harmonic,DesiredPeakPhotonEnergy,npts,emin,emax = self.getcurrentscreenvalues()
@@ -584,95 +988,7 @@ class DCSSpectrum(QWidget):
         self.KVal_edit.setText(f'{K:.5f}')
         if K:
             self.useKcheckbox.setCheckState(2)
-        
-    # def undulatorcalc_APS(self,period_inm,DesiredPeakPhotonEnergy,harmonic=1,PhotonEnergyMin=4000.0, PhotonEnergyMax=100000.0, numpts=6001):
-        
-    #     if period_inm==0.027:
-    #         numperiods = 88
-    #     elif period_inm==0.017:
-    #         numperiods = 137
-    #     else: 
-    #         undulatorlength = 0.027*88 #meters
-    #         numperiods = undulatorlength/period_inm    
-            
-    #     if self.useKcheckbox.checkState()==2:
-    #         K = float(self.KVal_edit.text())
-    #     else:
-    #         K = self.KfromRingEnergyAndUndulatorPeriod(7.0,period_inm,DesiredPeakPhotonEnergy,harmonic)
-    #     print(7.0)
-    #     print(period_inm)
-    #     print(DesiredPeakPhotonEnergy)
-    #     print(harmonic)
-
-    #     print(K)
-    #     energy, flux, spectral_power = self.xoppy_calc_undulator_spectrum_streamline(
-    #         ELECTRONENERGY=7.0,
-    #         ELECTRONENERGYSPREAD=0.00098,
-    #         ELECTRONCURRENT=float(self.ringcurrent_edit.text())/1000,
-    #         ELECTRONBEAMSIZEH=0.0002805,
-    #         ELECTRONBEAMSIZEV=1.02e-05,
-    #         ELECTRONBEAMDIVERGENCEH=1.18e-05,
-    #         ELECTRONBEAMDIVERGENCEV=3.4e-06,
-    #         PERIODID=period_inm,
-    #         NPERIODS=numperiods,
-    #         KV=K,
-    #         KH=0.0,
-    #         KPHASE=0.0,
-    #         DISTANCE=31.0,
-    #         GAPH=self.WBSsizeH*.001,#0.001457,
-    #         GAPV=self.WBSsizeV*.001,#0.000973,
-    #         GAPH_CENTER=0.0,
-    #         GAPV_CENTER=0.0,
-    #         PHOTONENERGYMIN=PhotonEnergyMin,
-    #         PHOTONENERGYMAX=PhotonEnergyMax,
-    #         PHOTONENERGYPOINTS=numpts,
-    #         USEEMITTANCES=1)
-    #     return energy,spectral_power
-    
-    # def undulatorcalc_APSU(self,period_inm,DesiredPeakPhotonEnergy,harmonic=1,PhotonEnergyMin=4000.0, PhotonEnergyMax=100000.0, numpts=6001):
-        
-    #     ringenergy = 6.0 #GeV
-    #     if period_inm==0.023:
-    #         numperiods = 206
-    #     elif period_inm==0.014:
-    #         numperiods = 338
-    #     else: 
-    #         undulatorlength = 4.738 #meters
-    #         numperiods = undulatorlength/period_inm        
-    #     offsetenergy = DesiredPeakPhotonEnergy*1.00375
-        
-    #     if self.useKcheckbox.checkState()==2:
-    #         K = float(self.KVal_edit.text())
-    #     else:
-    #         K = self.KfromRingEnergyAndUndulatorPeriod(ringenergy,period_inm,offsetenergy,harmonic)
-    #     print(ringenergy)
-    #     print(period_inm)
-    #     print(offsetenergy)
-    #     print(harmonic)
-    #     print(K)
-    #     energy, flux, spectral_power = self.xoppy_calc_undulator_spectrum_streamline(
-    #     ELECTRONENERGY=ringenergy,
-    #     ELECTRONENERGYSPREAD=0.00098,
-    #     ELECTRONCURRENT=float(self.ringcurrent_edit.text())/1000,
-    #     ELECTRONBEAMSIZEH=1.29e-05,
-    #     ELECTRONBEAMSIZEV=2.5e-06,
-    #     ELECTRONBEAMDIVERGENCEH=8.7e-06,
-    #     ELECTRONBEAMDIVERGENCEV=3.6e-06,
-    #     PERIODID=period_inm,
-    #     NPERIODS=numperiods,
-    #     KV=K,
-    #     KH=0.0,
-    #     KPHASE=0.0,
-    #     DISTANCE=31.0,
-    #     GAPH=self.WBSsizeH*.001,#0.001457,
-    #     GAPV=self.WBSsizeV*.001,#=0.000973,
-    #     GAPH_CENTER=0.0,
-    #     GAPV_CENTER=0.0,
-    #     PHOTONENERGYMIN=PhotonEnergyMin,
-    #     PHOTONENERGYMAX=PhotonEnergyMax,
-    #     PHOTONENERGYPOINTS=numpts,
-    #     USEEMITTANCES=1);
-    #     return energy,spectral_power
+  
     
     def xoppy_calc_undulator_spectrum_streamline(self,ELECTRONENERGY=6.04,ELECTRONENERGYSPREAD=0.001,ELECTRONCURRENT=0.2,\
                                   ELECTRONBEAMSIZEH=0.000395,ELECTRONBEAMSIZEV=9.9e-06,\
@@ -773,6 +1089,8 @@ class DCSSpectrum(QWidget):
         Nitermax = 50
         Niter = 0
         ringcurr =float(self.ringcurrent_edit.text())/1000
+        slitcenter_h = self.WBScenterH
+        slitcenter_v = self.WBScenterV
         
         def getpeakE(Kval,EnergyCenter,erange,npts=numpts):
             energy, flux, spectral_power =self.xoppy_calc_undulator_spectrum_streamline(ELECTRONENERGY=ringenergy,
@@ -790,8 +1108,8 @@ class DCSSpectrum(QWidget):
             DISTANCE=31.0,
             GAPH=self.WBSsizeH*.001,#0.001457,
             GAPV=self.WBSsizeV*.001,#0.000973,
-            GAPH_CENTER=0.0,
-            GAPV_CENTER=0.0,
+            GAPH_CENTER=slitcenter_h*.001,
+            GAPV_CENTER=slitcenter_v*.001,
             PHOTONENERGYMIN=EnergyCenter-erange,
             PHOTONENERGYMAX=EnergyCenter+erange,
             PHOTONENERGYPOINTS=numpts,
@@ -1081,11 +1399,19 @@ class ParameterEditor(QWidget):
                 new_value = float(edit_box.text())
                 setattr(self.parent_obj, param, new_value)
 
+class NavigationToolbar_sub(NavigationToolbar2QT):
+    # only display the buttons we need
+    toolitems = [t for t in NavigationToolbar2QT.toolitems if
+                 t[0] not in ('Back', 'Forward', 'Home','Save','Subplots')]
+
 class ExtraFigureWindow(QMainWindow):
-    def __init__(self, parent_obj):
+
+    def __init__(self, parent_obj, enable_roi_selection=True,windowtitle="Plot"):
         super().__init__()
+        self.windowtitle = windowtitle
 
         self.parent_obj = parent_obj
+        self.enable_roi_selection = enable_roi_selection
         self.init_ui()
         
     def check_panzoom_mode(self):
@@ -1094,102 +1420,425 @@ class ExtraFigureWindow(QMainWindow):
         else:
             return 0
         
+    def show_mouse_help(self):
+        msg = QMessageBox()
+        msg.setWindowTitle("Mouse Interactions")
+        msg.setIcon(QMessageBox.Information)
+        
+        text = "<b>Mouse Interactions:</b><br><ul>"
+        
+        if self.enable_roi_selection:
+            text += "<li><b>Left Click & Drag:</b> Select Region of Interest for power and photon number calculations</li>"
+        else:
+            text += "<li><b>Left Click & Drag:</b> Box Zoom</li>"
+            
+        text += "<li><b>Right Click & Drag:</b> Dynamic Zoom (drag right/up to zoom in, left/down to zoom out)</li>"
+        text += "<li><b>Middle Click & Drag:</b> Pan</li>"
+        text += "<li><b>Scroll Wheel:</b> Zoom In/Out (centered on cursor)</li>"
+        text += "<li><b>Right Click (No Drag):</b> Context Menu (Reset Zoom)</li>"
+        text += "</ul>"
+        
+        msg.setText(text)
+        msg.exec_()
+        
 
     def init_ui(self):
         
         self._main = QWidget()
-        self.setWindowTitle("Plot")
+        self.setWindowTitle(self.windowtitle)
         self.setCentralWidget(self._main)
         layout = QVBoxLayout(self._main)
 
+        # Menu Bar
+        self.menu_bar = QMenuBar(self)
+        self.setMenuBar(self.menu_bar)
+        
+        # Help Menu
+        help_menu = self.menu_bar.addMenu('Help')
+        mouse_help_action = QAction('Mouse Interactions', self)
+        mouse_help_action.triggered.connect(self.show_mouse_help)
+        help_menu.addAction(mouse_help_action)
+
         self.static_canvas = FigureCanvas(Figure(figsize=(5, 4)))
-        self.toolbar = NavigationToolbar2QT(self.static_canvas, self)
-        layout.addWidget(self.toolbar)
+        self.toolbar = NavigationToolbar_sub(self.static_canvas, self)
+        
+        # Create a horizontal layout for toolbar and options
+
+        toolbar_row = QHBoxLayout()
+        toolbar_row.addWidget(self.toolbar)
+        
+        # Plot Options
+        gb = QGroupBox("Options")
+        gb_layout = QHBoxLayout()
+        gb_layout.setContentsMargins(2, 2, 2, 2) # Compact margins
+        self.logx_cb = QCheckBox("Log X")
+        self.logx_cb.toggled.connect(self.update_scales)
+        gb_layout.addWidget(self.logx_cb)
+        
+        self.logy_cb = QCheckBox("Log Y")
+        self.logy_cb.toggled.connect(self.update_scales)
+        gb_layout.addWidget(self.logy_cb)
+        
+        gb.setLayout(gb_layout)
+        # Add groupbox to the horizontal row
+        toolbar_row.addWidget(gb)
+        
+        # Add the row layout to the main layout
+        layout.addLayout(toolbar_row)
+
         layout.addWidget(self.static_canvas)
         self.PowerLabel = QLabel(' ')
         layout.addWidget(self.PowerLabel)
 
 
         self.ax = self.static_canvas.figure.subplots()
+
+        self.static_canvas.figure.subplots_adjust(right=0.95,top=0.95)
+        self.static_canvas.figure.set_facecolor('white')
+        self.static_canvas.figure.set_edgecolor('black')
+        self.ax.grid(True, which='both',ls='--',lw=0.5)
+        self.ax.set_facecolor('white')
+        self.ax.spines['bottom'].set_color('black')
+        self.ax.spines['top'].set_color('black')
+        self.ax.spines['left'].set_color('black')
+        self.ax.spines['right'].set_color('black')
+        self.ax.tick_params(axis='both', colors='black')
+        self.ax.xaxis.label.set_color('black')
+        self.ax.yaxis.label.set_color('black')      
+
+        def format_coord(x, y):
+            return f'{x:.0f} eV: {y:.4f} W/eV'
+        self.ax.format_coord = format_coord
         # self.ax.set_aspect(self.parent_obj.aspectratio)
         self.static_canvas.draw()
         
+
+        
+
+        self.zoom_start_pixel = None
+        self.zoom_initial_xlim = None
+        self.zoom_initial_ylim = None
+        self.zoom_pivot = None # Initialize zoom_pivot
 
         self.highlight = None  #   highlighting rectangle
         self.start_point = None  # start point for  x-range selection
         self.xdata = []
         self.ydata = []
+        
+        # Pan attributes
+        self.pan_start = None
+        self.pan_initial_xlim = None
+        self.pan_initial_ylim = None
+        
+        # Box Zoom attributes
+        self.box_zoom_start = None
+        self.box_zoom_patch = None
+        
         def on_click(event):
             """Called when the mouse button is pressed."""
             if not self.check_panzoom_mode():
-            
+                
                 if event.inaxes != self.ax:
                     return
-                self.start_point = event.xdata   
-            
-                # remove existing highlight  
-                if self.highlight:
-                    self.highlight.remove()
-                self.highlight = self.ax.axvspan(self.start_point, self.start_point, color='yellow', alpha=0.3)
-                self.static_canvas.draw()
-        
+
+                # Left Click
+                if event.button == 1:
+                    if self.enable_roi_selection:
+                        # Region Selection
+                        self.start_point = event.xdata   
+                    
+                        # remove existing highlight  
+                        if self.highlight:
+                            self.highlight.remove()
+                        self.highlight = self.ax.axvspan(self.start_point, self.start_point, color='yellow', alpha=0.3)
+                        self.static_canvas.draw()
+                    else:
+                        # Box Zoom Start
+                        self.box_zoom_start = (event.xdata, event.ydata)
+                        if self.box_zoom_patch:
+                            self.box_zoom_patch.remove()
+                            self.box_zoom_patch = None
+                        
+                        # Create a rectangle patch
+                        self.box_zoom_patch = Rectangle(
+                            (event.xdata, event.ydata), 0, 0,
+                            fill=False, edgecolor='black', linestyle='--'
+                        )
+                        self.ax.add_patch(self.box_zoom_patch)
+                        self.static_canvas.draw()
+                
+                # Middle Click: Pan Init
+                elif event.button == 2:
+                    self.pan_start = (event.x, event.y)
+                    self.pan_initial_xlim = self.ax.get_xlim()
+                    self.pan_initial_ylim = self.ax.get_ylim()
+                
+                # Right Click: Zoom Init
+                elif event.button == 3:
+                    self.zoom_start_pixel = (event.x, event.y)
+                    self.zoom_initial_xlim = self.ax.get_xlim()
+                    self.zoom_initial_ylim = self.ax.get_ylim()
+                    self.zoom_pivot = (event.xdata, event.ydata) # Store pivot in data coordinates
+
         def on_drag(event):
-            
             if not self.check_panzoom_mode():
                 """Called when the mouse is dragged."""
     
-                if event.inaxes != self.ax or self.start_point is None:
+                if event.inaxes != self.ax:
                     return
-             
-                self.highlight.remove()
-                self.highlight = self.ax.axvspan(self.start_point, event.xdata, color='yellow', alpha=0.3)
-                self.static_canvas.draw()
-        
-        
                 
+                # Left Drag
+                if event.button == 1:
+                    if self.enable_roi_selection and self.start_point is not None:
+                        # Update Region Selection
+                        self.highlight.remove()
+                        self.highlight = self.ax.axvspan(self.start_point, event.xdata, color='yellow', alpha=0.3)
+                        self.static_canvas.draw()
+                    elif not self.enable_roi_selection and self.box_zoom_start is not None:
+                        # Update Box Zoom Rectangle
+                        x0, y0 = self.box_zoom_start
+                        x1, y1 = event.xdata, event.ydata
+                        
+                        width = x1 - x0
+                        height = y1 - y0
+                        
+                        self.box_zoom_patch.set_width(width)
+                        self.box_zoom_patch.set_height(height)
+                        self.box_zoom_patch.set_xy((x0, y0))
+                        
+                        self.static_canvas.draw()
                 
+                # Middle Drag: Pan
+                elif event.button == 2 and self.pan_start is not None:
+                    dx_pix = event.x - self.pan_start[0]
+                    dy_pix = event.y - self.pan_start[1]
+                    
+                    # Convert pixel delta to data delta
+                    # We need the axis transform to do this correctly, or approximation
+                    # Getting current diff
+                    x_start, x_end = self.pan_initial_xlim
+                    y_start, y_end = self.pan_initial_ylim
+                    
+                    # Get bbox
+                    bbox = self.ax.bbox
+                    bbox_width = bbox.width
+                    bbox_height = bbox.height
+                    
+                    # Scale factors (data per pixel)
+                    # Note: x_scale depends on log/linear, this simple approx works for linear
+                    # For robust handling including log, we might need a transform, but let's try simple first
+                    # or just use the current scale
+                    
+                    # Check if log scale to handle panning correctly? 
+                    # Simpler for now: just linear approximation or use mpl transforms.
+                    # Let's use the initial scales
+                    
+                    scale_x = (x_end - x_start) / bbox_width
+                    scale_y = (y_end - y_start) / bbox_height
+                    
+                    # For log scale, this simple subtraction doesn't work well visually 
+                    # IF user wants full pan support on log plots, it's more complex.
+                    # Assuming linear primarily or simple shift.
+                    
+                    if self.ax.get_xscale() == 'log' or self.ax.get_yscale() == 'log':
+                         # Log pan is tricky with simple deltas. 
+                         # Just stick to linear behavior logic or rely on toolbar.
+                         # Implementation below assumes linear for delta
+                         pass 
+
+                    # Inverse direction: dragging mouse right moves view left (data moves right)
+                    new_x0 = x_start - dx_pix * scale_x
+                    new_x1 = x_end - dx_pix * scale_x
+                    new_y0 = y_start - dy_pix * scale_y
+                    new_y1 = y_end - dy_pix * scale_y
+                    
+                    self.ax.set_xlim(new_x0, new_x1)
+                    self.ax.set_ylim(new_y0, new_y1)
+                    self.static_canvas.draw()
+
+                # Right Drag: Zoom
+                elif event.button == 3 and self.zoom_start_pixel is not None:
+                    # Calculate drag distance in pixels
+                    dx_pix = event.x - self.zoom_start_pixel[0]
+                    dy_pix = event.y - self.zoom_start_pixel[1]
+                    
+                    # Define sensitivity
+                    # Using exponential scaling for smoother zoom
+                    sx = 0.99 ** dx_pix # Drag Right (Positive dx) -> Zoom In (Smaller Range)
+                    sy = 0.99 ** dy_pix # Drag Up (Positive dy) -> Zoom In (Smaller Range)
+                    
+                    # Get Initial Layout from when the right-click started
+                    x0, x1 = self.zoom_initial_xlim
+                    y0, y1 = self.zoom_initial_ylim
+                    
+                    if self.zoom_pivot and self.zoom_pivot[0] is not None and self.zoom_pivot[1] is not None:
+                        px, py = self.zoom_pivot
+                        
+                        # Calculate new limits maintaining the pivot point's relative position
+                        new_x0 = px - (px - x0) * sx
+                        new_x1 = px + (x1 - px) * sx
+                        new_y0 = py - (py - y0) * sy
+                        new_y1 = py + (y1 - py) * sy
+                        
+                        self.ax.set_xlim(new_x0, new_x1)
+                        self.ax.set_ylim(new_y0, new_y1)
+                        self.static_canvas.draw()
+
+
         def on_release(event):
             """Called when the mouse button is released."""
-            if not self.check_panzoom_mode():    
-                if self.start_point is None or event.inaxes != self.ax:
-                    return
-             
-                x_min = min(self.start_point, event.xdata)
-                x_max = max(self.start_point, event.xdata)
+            if not self.check_panzoom_mode():
                 
-                
-                if self.xdata:
-                    print(f'From {x_min:0.3f} eV to {x_max:0.3f} eV')
- 
-                    listofpowers = ''
-                    for xvec,yvec in zip(self.xdata,self.ydata):
+                # Left Click Release
+                if event.button == 1:
+                    if self.enable_roi_selection:
+                        # ROI Finalize
+                        if self.start_point is None or event.inaxes != self.ax:
+                            return
+                        
+                        x_min = min(self.start_point, event.xdata)
+                        x_max = max(self.start_point, event.xdata)
+                        
+                        if self.xdata:
+                            print(f'From {x_min:0.3f} eV to {x_max:0.3f} eV')
+        
+                            listofpowers = ''
+                            for xvec,yvec in zip(self.xdata,self.ydata):
+                            
+                                mask = (xvec >= x_min) & (xvec <= x_max)         
+                                x = xvec[mask]
+                                y = yvec[mask]
+                                if len(x) > 1:
+                                    power = trapezoid(y, x)
+                                    powertot = trapezoid(yvec, xvec)
+                                    
+                                    photons_pereV_persec = y/x/(1.602e-19)
+                                    photons_perbunch24bunch = trapezoid(photons_pereV_persec,x)/(271647*24)
+                                    photons_perbunch48bunch = trapezoid(photons_pereV_persec,x)/(271647*48)
+                                    
+                                    Eperbunch_24_uJ = power/(271647*24)*1e6
+                                    Eperbunch_48_uJ = power/(271647*48)*1e6
+                                    # (70)/(24000)/(6.52e6)/(1.602e-19)
+                                    FractionOfTotal = 0
+                                    if powertot != 0:
+                                        FractionOfTotal = power/powertot
+                                    
+                                    
+                                    listofpowers=listofpowers + f'{power:0.3f} W, ph/153ns: {photons_perbunch24bunch:0.2e}({Eperbunch_24_uJ:.2f} µJ), ph/77ns: {photons_perbunch48bunch:0.2e}({Eperbunch_48_uJ:.2f} µJ), Fraction of Total: {FractionOfTotal:0.2f}'
+                            self.PowerLabel.setText(listofpowers)
+                            print(listofpowers) 
                     
-                        mask = (xvec >= x_min) & (xvec <= x_max)         
-                        x = xvec[mask]
-                        y = yvec[mask]
-                        power = trapezoid(y, x)
+                        # reset for next selection
+                        self.start_point = None
+
+                    else:
+                        # Box Zoom Finalize
+                        if self.box_zoom_start is None:
+                            return
                         
-                        photons_pereV_persec = y/x/(1.602e-19)
-                        photons_persec = trapezoid(photons_pereV_persec,x)
-                        photons_perbunch24bunch = trapezoid(photons_pereV_persec,x)/(271647*24)
-                        photons_perbunch48bunch = trapezoid(photons_pereV_persec,x)/(271647*48)
+                        if self.box_zoom_patch:
+                            self.box_zoom_patch.remove()
+                            self.box_zoom_patch = None
+                            
+                        x0, y0 = self.box_zoom_start
+                        x1, y1 = event.xdata, event.ydata
                         
-                        Eperbunch_24_uJ = power/(271647*24)*1e6
-                        Eperbunch_48_uJ = power/(271647*48)*1e6
-                        # (70)/(24000)/(6.52e6)/(1.602e-19)
+                        # Handle release outside axes
+                        if x1 is None or y1 is None:
+                            try:
+                                inv = self.ax.transData.inverted()
+                                x1_t, y1_t = inv.transform((event.x, event.y))
+                                if x1 is None: x1 = x1_t
+                                if y1 is None: y1 = y1_t
+                            except Exception as e:
+                                print(f"Error converting coordinates: {e}")
+                                return
                         
+                        # Use min/max to handle dragging in any direction
+                        new_x0, new_x1 = sorted([x0, x1])
+                        new_y0, new_y1 = sorted([y0, y1])
                         
-                        listofpowers=listofpowers + f'{power:0.3f} W, ph/153ns: {photons_perbunch24bunch:0.2e}({Eperbunch_24_uJ:.2f} µJ), ph/77ns: {photons_perbunch48bunch:0.2e}({Eperbunch_48_uJ:.2f} µJ),'
-                    self.PowerLabel.setText(listofpowers)
-                    print(listofpowers) 
-            
-                # reset for next selection
-                self.start_point = None
- 
+                        # Avoid singular zoom
+                        if new_x1 - new_x0 > 0 and new_y1 - new_y0 > 0:
+                            self.ax.set_xlim(new_x0, new_x1)
+                            self.ax.set_ylim(new_y0, new_y1)
+                            self.static_canvas.draw()
+                            
+                        self.box_zoom_start = None
+
+                # Middle Click Release: Pan Finalize
+                elif event.button == 2:
+                    self.pan_start = None
+                    self.pan_initial_xlim = None
+                    self.pan_initial_ylim = None
+                
+                # Right Click Release
+                # Right Click Release
+                elif event.button == 3:
+                     # Check for context menu (click without drag)
+                     if self.zoom_start_pixel is not None:
+                         dx = abs(event.x - self.zoom_start_pixel[0])
+                         dy = abs(event.y - self.zoom_start_pixel[1])
+                         if dx < 5 and dy < 5:
+                             menu = QMenu()
+                             reset_action = menu.addAction("Reset Zoom")
+                             reset_action.triggered.connect(self.reset_zoom)
+                             menu.exec_(QCursor.pos())
+
+                     self.zoom_start_pixel = None
+                     self.zoom_initial_xlim = None
+                     self.zoom_initial_ylim = None
+                     self.zoom_pivot = None
+
+        def on_scroll(event):
+            if not self.check_panzoom_mode() and event.inaxes == self.ax:
+                base_scale = 1.2
+                if event.button == 'up':
+                    scale_factor = 1/base_scale
+                else: # 'down'
+                    scale_factor = base_scale
+                
+                # Get current range
+                x0, x1 = self.ax.get_xlim()
+                y0, y1 = self.ax.get_ylim()
+                
+                # Pivot is current mouse position
+                px, py = event.xdata, event.ydata
+                
+                # Calculate new range centered on pivot
+                new_x0 = px - (px - x0) * scale_factor
+                new_x1 = px + (x1 - px) * scale_factor
+                new_y0 = py - (py - y0) * scale_factor
+                new_y1 = py + (y1 - py) * scale_factor
+                
+                self.ax.set_xlim(new_x0, new_x1)
+                self.ax.set_ylim(new_y0, new_y1)
+                self.static_canvas.draw()
+
         self.static_canvas.mpl_connect('button_press_event', on_click)
         self.static_canvas.mpl_connect('motion_notify_event', on_drag)
         self.static_canvas.mpl_connect('button_release_event', on_release)
-         
+        self.static_canvas.mpl_connect('scroll_event', on_scroll)
+        
+        plt.show()
+
+    def reset_zoom(self):
+        self.ax.autoscale(True, axis='both')
+        self.static_canvas.draw()
+                
+
+
+    def update_scales(self):
+        if self.logx_cb.isChecked():
+            self.ax.set_xscale('log')
+        else:
+            self.ax.set_xscale('linear')
+        
+        if self.logy_cb.isChecked():
+            self.ax.set_yscale('log')
+        else:
+            self.ax.set_yscale('linear')
+        self.static_canvas.draw()
 
 class UndulatorCalcConfig(QObject):
     def __init__(self,parent=None,Undulator=None,period=None,harmonicnumber=None,energy=None,npts=None,emin=None,emax=None,K=None,ringcurrent=None,APSU=1):
@@ -1244,6 +1893,8 @@ class UndulatorCalcConfig(QObject):
 
         
     
+# %%  2D Undulator Calc
+
 
 #### Start of 2D Undulator Calc
  
@@ -1600,6 +2251,8 @@ def calc1d_srw_removeoutput(bl,photonEnergyMin=3000.0,photonEnergyMax=55000.0,ph
 
     return (eArray,intensArray)
 
+
+
 class ArrayViewer(QWidget):
     def __init__(self,xyspectrum=None, edat=None,xvals=None,yvals=None):
         if xyspectrum is None:
@@ -1613,6 +2266,8 @@ class ArrayViewer(QWidget):
             self.yvals = yvals
             self.data_loaded = True
             self.index = 0
+            
+        self.cmin,self.cmax = np.percentile(xyspectrum,[1,99])
 
         super().__init__()
         self.setWindowTitle("Undulator, 2D Energy Slice Viewer")
@@ -1754,6 +2409,8 @@ class PlotterWidget(QMainWindow):
         x_layout.addWidget(QLabel("X Start:"))
         slitsize_h = parent.WBSsizeH
         slitsize_v= parent.WBSsizeV
+        # slitcenter_h = parent.WBScenterH
+        # slitcenter_v = parent.WBScenterV
         self.xstart_edit = QLineEdit(f'{-1*slitsize_h/2:3f}')
         x_layout.addWidget(self.xstart_edit)
         

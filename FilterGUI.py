@@ -1,26 +1,31 @@
 import sys
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QPushButton, QHBoxLayout,
-    QCheckBox, QLineEdit, QLabel
+    QCheckBox, QLineEdit, QLabel, QMessageBox, QMenuBar, QAction, QMenu
 )
-from PyQt5.QtCore import QTimer
-from xoppylib.xoppy_xraylib_util import descriptor_kind_index
+from PyQt5.QtCore import QTimer, Qt
+from xoppylib.xoppy_xraylib_util import descriptor_kind_index, nist_compound_list
+import numpy as np
 
 class filterRow(QWidget):
     def __init__(self, compound="", thickness=0.0, density=0.0,parent=None):
         super(filterRow, self).__init__(parent)
         
+        # Create layout for the row
         self.layout = QHBoxLayout()
 
+        # Checkbox for enabling/disabling
         self.checkbox = QCheckBox()
         self.layout.addWidget(self.checkbox)
 
-        # fields for Compound, Thickness, and Density
+        # Input fields for Compound, Thickness, and Density
         if compound:
             self.compound_edit = QLineEdit(compound)
         else:
             self.compound_edit = QLineEdit()
         self.compound_edit.setPlaceholderText("Compound")
+        self.compound_edit.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.compound_edit.customContextMenuRequested.connect(self.show_context_menu)
         self.layout.addWidget(self.compound_edit)
         
         
@@ -38,16 +43,42 @@ class filterRow(QWidget):
         self.density_edit.setPlaceholderText("Density (g/cc)")
         self.layout.addWidget(self.density_edit)
 
+        # Delete button
         self.delete_button = QPushButton("Delete")
         self.delete_button.clicked.connect(self.delete_row)
         self.layout.addWidget(self.delete_button)
         
+        
+        
+
+        # Connect signals to update the lists in the parent
         self.compound_edit.editingFinished.connect(lambda: parent.update_lists())
         self.thickness_edit.editingFinished.connect(lambda: parent.update_lists())
         self.density_edit.editingFinished.connect(lambda: parent.update_lists())
         self.checkbox.toggled.connect(lambda: parent.update_lists())
         
+        
         self.setLayout(self.layout)
+
+    def show_context_menu(self, position):
+        menu = QMenu()
+        nist_menu = menu.addMenu("NIST compounds")
+        
+        try:
+            compounds = nist_compound_list()
+            for compound in compounds:
+                action = QAction(compound, self)
+                action.triggered.connect(lambda checked, text=compound: self.set_compound(text))
+                nist_menu.addAction(action)
+        except Exception as e:
+            print(f"Error loading NIST compounds: {e}")
+
+        menu.exec_(self.compound_edit.mapToGlobal(position))
+
+    def set_compound(self, text):
+        self.compound_edit.setText(text)
+        self.density_edit.setText('?')
+        self.parent().update_lists()
         
     def isvalidvalue(self,value):
         if value=='?':
@@ -73,13 +104,14 @@ class filterRow(QWidget):
         self.parent().remove_row(self)
         
     def blink_red(self,widgettoblink):
+        # Set the edit box to red
         widgettoblink.setStyleSheet("QLineEdit { background-color: red; }")
     
-        # timer to revert color back
+        # Create a timer to revert the color back
         QTimer.singleShot(500, lambda: self.revert_color(widgettoblink))  # Change color back after 500 ms
 
     def revert_color(self,widgettoblink):
-        # Revert to original style
+        # Revert to the original style
         widgettoblink.setStyleSheet("")
 
 class FilterManager(QWidget):
@@ -89,21 +121,58 @@ class FilterManager(QWidget):
         self.setWindowTitle("Filter Manager")
         self.layout = QVBoxLayout()
         
+        # Menu Bar
+        menu_bar = QMenuBar(self)
+        # For QWidget, add the menu bar to the layout directly
+        self.layout.setMenuBar(menu_bar) # This line is problematic for QWidget, it should be self.layout.addWidget(menu_bar)
+        # Corrected: Add menu_bar to the layout
+        self.layout.addWidget(menu_bar)
+
+        file_menu = menu_bar.addMenu('File')
+        
+        load_std_action = QAction('Load Standard Filters', self)
+        load_std_action.triggered.connect(self.load_standard_filters)
+        file_menu.addAction(load_std_action)
+        
+        
+
+        button_row = QHBoxLayout()
+        # Button to add new filters
         self.add_button = QPushButton("Add filter")
         self.add_button.clicked.connect(self.add_filter)
-        self.layout.addWidget(self.add_button)
+        button_row.addWidget(self.add_button)
+        self.plot_button = QPushButton("Plot attenuation")
+        self.plot_button.clicked.connect(self.plot_attenuation)
+        button_row.addWidget(self.plot_button)
+        self.layout.addLayout(button_row)
 
-
+        
+        # Container for rows
         self.filters_container = QVBoxLayout()
         
+        # # Create layout for the row
+        # self.labellayout = QHBoxLayout()        
+        # checkbox = QCheckBox()
+        # self.labellayout.addWidget(checkbox)
+        # # checkbox.setVisible(1)        
+        # self.labellayout.addWidget(QLabel('Compound'))
+        
+        # self.filters_container.addLayout(self.labellayout)
         self.layout.addLayout(self.filters_container)
-
         self.setLayout(self.layout)
         self.activeCompounds = []
         self.activeThicknesses = []
         self.activeDensities = []
         
 
+    def load_standard_filters(self):
+        # Based on user's standard set
+        self.add_filter("C", 0.2, 3.53)
+        self.add_filter("Be", 1.27, '?')
+        self.add_filter("Kapton Polyimide Film", 0.25, '?')
+        self.add_filter("He", 300.0, '?')
+        self.add_filter("Air, Dry (near sea level)", 100.0, '?')
+        
     def add_filter(self, compound="", thickness=0.0, density=0.0,enable=False):
         new_row = filterRow(compound, thickness, density, self)
         self.filters_container.addWidget(new_row)
@@ -124,16 +193,17 @@ class FilterManager(QWidget):
             
 
     def remove_row(self, row):
-        row.deleteLater()  
-        self.filters_container.removeWidget(row)  
-        row.setParent(None)  
+        row.deleteLater()  # Safely remove the row
+        self.filters_container.removeWidget(row)  # Remove from layout
+        row.setParent(None)  # Clear parent
         
     def update_lists(self):
+        # Clear the lists
         self.activeCompounds.clear()
         self.activeThicknesses.clear()
         self.activeDensities.clear()
 
-        # go through rows and update lists based on checked boxes
+        # Iterate through the rows and update the lists based on checked boxes
         for i in range(self.filters_container.count()):
             row = self.filters_container.itemAt(i).widget()
             values = row.get_values()
@@ -165,7 +235,10 @@ class FilterManager(QWidget):
             else:
                 badval=1
             
-        # print the lists 
+                          
+            
+
+        # Optionally print the lists to see the updates
         print("Active Compounds:", self.activeCompounds)
         print("Active Thicknesses:", self.activeThicknesses)
         print("Active Densities:", self.activeDensities)        
@@ -182,6 +255,45 @@ class FilterManager(QWidget):
             return 0
         
 
+    def plot_attenuation(self):
+        """Plot attenuation using the parent DCSSpectrum window."""
+        required_attrs = ("XrayFilter", "plot_filter_attenuation", "subwindows")
+        if any(not hasattr(self.parent_obj, attr) for attr in required_attrs):
+            QMessageBox.warning(
+                self,
+                "Unavailable",
+                "This plot is only available when the Filter Manager is opened from DCSSpectrum.",
+            )
+            return
+
+        self.update_lists()
+        if not self.activeCompounds:
+            QMessageBox.information(self, "No Active Filters", "Enable at least one valid filter to plot attenuation.")
+            return
+
+        try:
+            emin = float(self.parent_obj.Emin_edit.text())
+            emax = float(self.parent_obj.Emax_edit.text())
+            npts = int(float(self.parent_obj.NPts_edit.text()))
+        except (AttributeError, ValueError):
+            QMessageBox.warning(self, "Invalid Energy Range", "Enter valid energy range values in the main GUI.")
+            return
+
+        if npts < 2 or emax <= emin:
+            QMessageBox.warning(self, "Invalid Energy Range", "Ensure Emin < Emax and # Points is at least 2.")
+            return
+
+        energy = np.linspace(emin, emax, npts)
+        flat_input = np.ones_like(energy)
+
+        try:
+            filtered_energy, filtered_power = self.parent_obj.XrayFilter(energy, flat_input)
+        except Exception as exc:
+            QMessageBox.critical(self, "Filter Error", f"Unable to evaluate filter attenuation:\n{exc}")
+            return
+
+        self.parent_obj.plot_filter_attenuation(filtered_energy, filtered_power)
+
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
@@ -189,7 +301,7 @@ if __name__ == "__main__":
     window.resize(600, 200)
     
     # Example: Adding some initial rows with values
-    window.add_filter("Al", 1, 2.7)
+    window.add_filter("Air, Dry (near sea level)", 1, 0.02)
 
     window.show()
     sys.exit(app.exec_())

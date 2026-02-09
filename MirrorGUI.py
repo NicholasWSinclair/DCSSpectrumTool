@@ -1,7 +1,7 @@
 import sys
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QPushButton, QHBoxLayout,
-    QCheckBox, QLineEdit, QLabel
+    QCheckBox, QLineEdit, QLabel, QMenuBar, QAction
 )
 from PyQt5.QtCore import QTimer
 from xoppylib.xoppy_xraylib_util import descriptor_kind_index
@@ -9,13 +9,15 @@ from xoppylib.xoppy_xraylib_util import descriptor_kind_index
 class MirrorRow(QWidget):
     def __init__(self, MirrorStripe="", Angle=2.1, density='?',parent=None):
         super(MirrorRow, self).__init__(parent)
-         
+        
+        # Create layout for the row
         self.layout = QHBoxLayout()
- 
+
+        # Checkbox for enabling/disabling
         self.checkbox = QCheckBox()
         self.layout.addWidget(self.checkbox)
 
-        #    fields for MirrorStripe, Angle, and Density
+        # Input fields for MirrorStripe, Angle, and Density
         if MirrorStripe:
             self.MirrorStripe_edit = QLineEdit(MirrorStripe)
         else:
@@ -37,12 +39,16 @@ class MirrorRow(QWidget):
             self.density_edit = QLineEdit()
         self.density_edit.setPlaceholderText("Density (g/cc)")
         self.layout.addWidget(self.density_edit)
- 
+
+        # Delete button
         self.delete_button = QPushButton("Delete")
         self.delete_button.clicked.connect(self.delete_row)
         self.layout.addWidget(self.delete_button)
         
-         
+        
+        
+
+        # Connect signals to update the lists in the parent
         self.MirrorStripe_edit.editingFinished.connect(lambda: parent.update_lists())
         self.Angle_edit.editingFinished.connect(lambda: parent.update_lists())
         self.density_edit.editingFinished.connect(lambda: parent.update_lists())
@@ -73,12 +79,15 @@ class MirrorRow(QWidget):
     def delete_row(self):
         self.parent().remove_row(self)
         
-    def blink_red(self,widgettoblink): 
+    def blink_red(self,widgettoblink):
+        # Set the edit box to red
         widgettoblink.setStyleSheet("QLineEdit { background-color: red; }")
- 
-        QTimer.singleShot(500, lambda: self.revert_color(widgettoblink))  #  set color back after 500 ms
+    
+        # Create a timer to revert the color back
+        QTimer.singleShot(500, lambda: self.revert_color(widgettoblink))  # Change color back after 500 ms
 
     def revert_color(self,widgettoblink):
+        # Revert to the original style
         widgettoblink.setStyleSheet("")
 
 class MirrorManager(QWidget):
@@ -88,15 +97,35 @@ class MirrorManager(QWidget):
         self.setWindowTitle("Mirror Manager")
         self.layout = QVBoxLayout()
         
+        # Menu Bar
+        menu_bar = QMenuBar(self)
+        self.layout.setMenuBar(menu_bar)
+        file_menu = menu_bar.addMenu('File')
         
+        load_std_action = QAction('Load Standard Mirrors', self)
+        load_std_action.triggered.connect(self.load_standard_mirrors)
+        file_menu.addAction(load_std_action)
+        
+        
+
+        # Button to add new Mirrors
         self.add_button = QPushButton("Add Mirror")
         self.add_button.clicked.connect(self.add_Mirror)
         self.layout.addWidget(self.add_button)
 
 
+        
+        # Container for rows
         self.Mirrors_container = QVBoxLayout()
         
+        # # Create layout for the row
+        # self.labellayout = QHBoxLayout()        
+        # checkbox = QCheckBox()
+        # self.labellayout.addWidget(checkbox)
+        # # checkbox.setVisible(1)        
+        # self.labellayout.addWidget(QLabel('MirrorStripe'))
         
+        # self.Mirrors_container.addLayout(self.labellayout)
         self.layout.addLayout(self.Mirrors_container)
 
         self.setLayout(self.layout)
@@ -105,9 +134,20 @@ class MirrorManager(QWidget):
         self.activeDensities = []
         
 
-    def add_Mirror(self, MirrorStripe="", Angle=0.0, density=0.0):
+    def load_standard_mirrors(self):
+        self.add_Mirror("Pt", 2.1,'?')
+        self.add_Mirror("Pt", 2.1,'?')
+        self.add_Mirror("Rh", 2.1,'?')
+        self.add_Mirror("Rh", 2.1,'?')
+        self.add_Mirror("Si", 2.1,'?')
+        self.add_Mirror("Si", 2.1,'?')
+        
+    def add_Mirror(self, MirrorStripe="", Angle=0.0, density=0.0, enabled=False):
         new_row = MirrorRow(MirrorStripe, Angle, density, self)
         self.Mirrors_container.addWidget(new_row)
+        if enabled:
+            new_row.checkbox.setCheckState(2)
+            self.update_lists()
         
     def isvalidcompound(self,compound):
         
@@ -120,17 +160,17 @@ class MirrorManager(QWidget):
             
 
     def remove_row(self, row):
-        row.deleteLater()  
-        self.Mirrors_container.removeWidget(row)  
-        row.setParent(None)  
+        row.deleteLater()  # Safely remove the row
+        self.Mirrors_container.removeWidget(row)  # Remove from layout
+        row.setParent(None)  # Clear parent
         
     def update_lists(self):
-        
+        # Clear the lists
         self.activeMirrorStripes.clear()
         self.activeAngles.clear()
         self.activeDensities.clear()
 
-        
+        # Iterate through the rows and update the lists based on checked boxes
         for i in range(self.Mirrors_container.count()):
             row = self.Mirrors_container.itemAt(i).widget()
             values = row.get_values()
